@@ -1,0 +1,66 @@
+{
+  "FOOTBALL": {
+    "sport": "Football",
+    "channel_type": "prematch"
+  },
+  "FOOTBALL LIVE": {
+    "sport": "Football",
+    "channel_type": "live"
+  },
+  "TENNIS": {
+    "sport": "Tennis",
+    "channel_type": "prematch"
+  },
+  "TENNIS LIVE": {
+    "sport": "Tennis",
+    "channel_type": "live"
+  },
+  "CS2": {
+    "sport": "CS2",
+    "channel_type": "prematch"
+  },
+  "CS2 LIVE": {
+    "sport": "CS2",
+    "channel_type": "live"
+  },
+  "DOTA 2": {
+    "sport": "Dota 2",
+    "channel_type": "prematch"
+  },
+  "DOTA 2 LIVE": {
+    "sport": "Dota 2",
+    "channel_type": "live"
+  },
+  "⚽ Футбол — До начала": {
+    "sport": "Football",
+    "channel_type": "prematch"
+  },
+  "🔴 Футбол — Лайв": {
+    "sport": "Football",
+    "channel_type": "live"
+  },
+  "🎾 Теннис — До начала": {
+    "sport": "Tennis",
+    "channel_type": "prematch"
+  },
+  "🔴 Теннис — Лайв": {
+    "sport": "Tennis",
+    "channel_type": "live"
+  },
+  "🎮 CS2 — До начала": {
+    "sport": "CS2",
+    "channel_type": "prematch"
+  },
+  "🔴 CS2 — Лайв": {
+    "sport": "CS2",
+    "channel_type": "live"
+  },
+  "👾 Dota 2 — До начала": {
+    "sport": "Dota 2",
+    "channel_type": "prematch"
+  },
+  "🔴 Dota 2 — Лайв": {
+    "sport": "Dota 2",
+    "channel_type": "live"
+  }
+}
