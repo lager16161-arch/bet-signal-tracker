@@ -276,7 +276,7 @@ def calc_stats(where="1=1", params=()):
 
 
 def category_breakdown(where, params=()):
-    """Detailed results for each existing bet category, using the same stored accounting."""
+    """Detailed results by existing bet category, using stored accounting only."""
     output = {}
     with conn() as db:
         rows = db.execute(f"""SELECT category,
@@ -286,42 +286,72 @@ def category_breakdown(where, params=()):
             SUM(CASE WHEN result IN ('v','void') THEN 1 ELSE 0 END) voids,
             SUM(CASE WHEN result IS NULL THEN 1 ELSE 0 END) pending,
             COALESCE(SUM(CASE WHEN result IS NOT NULL THEN COALESCE(profit,0) ELSE 0 END),0) profit,
+            COALESCE(SUM(CASE WHEN result IS NOT NULL THEN stake ELSE 0 END),0) resolved_stake,
             SUM(CASE WHEN odds BETWEEN 1.0 AND 1.50 THEN 1 ELSE 0 END) green,
             SUM(CASE WHEN odds > 1.50 AND odds <= 2.00 THEN 1 ELSE 0 END) yellow,
             SUM(CASE WHEN odds > 2.00 THEN 1 ELSE 0 END) red,
             SUM(CASE WHEN odds IS NULL OR odds < 1.0 THEN 1 ELSE 0 END) unknown
             FROM bets WHERE {where} GROUP BY category""", params).fetchall()
     for row in rows:
-        output[row['category']] = dict(row)
+        d = dict(row)
+        d['wins'] = d['wins'] or 0; d['losses'] = d['losses'] or 0
+        d['voids'] = d['voids'] or 0; d['pending'] = d['pending'] or 0
+        decided = d['wins'] + d['losses']
+        d['hit_rate'] = d['wins'] / decided * 100 if decided else 0.0
+        d['roi'] = (d['profit'] or 0) / d['resolved_stake'] * 100 if d['resolved_stake'] else 0.0
+        output[d['category']] = d
+    return output
+
+
+def odds_band_breakdown(where, params=()):
+    """Outcome and profit breakdown for the existing odds color thresholds."""
+    specs = [('green', '🟢 1.01–1.50', 'odds BETWEEN 1.0 AND 1.50'),
+             ('yellow', '🟡 1.51–2.00', 'odds > 1.50 AND odds <= 2.00'),
+             ('red', '🔴 2.01+', 'odds > 2.00'),
+             ('unknown', '⚪ Не определён', 'odds IS NULL OR odds < 1.0')]
+    output = []
+    with conn() as db:
+        for key, label, condition in specs:
+            row = db.execute(f"""SELECT COUNT(*) total,
+                SUM(CASE WHEN result IN ('w','win') THEN 1 ELSE 0 END) wins,
+                SUM(CASE WHEN result IN ('l','loss') THEN 1 ELSE 0 END) losses,
+                SUM(CASE WHEN result IN ('v','void') THEN 1 ELSE 0 END) voids,
+                SUM(CASE WHEN result IS NULL THEN 1 ELSE 0 END) pending,
+                COALESCE(SUM(CASE WHEN result IS NOT NULL THEN COALESCE(profit,0) ELSE 0 END),0) profit
+                FROM bets WHERE ({where}) AND ({condition})""", params).fetchone()
+            d = dict(row)
+            decided = (d['wins'] or 0) + (d['losses'] or 0)
+            d['hit_rate'] = (d['wins'] or 0) / decided * 100 if decided else 0.0
+            output.append((label, d))
     return output
 
 
 def format_category_lines(where, params=(), indent=""):
     details = category_breakdown(where, params)
-    lines = [f"{indent}🧩 По типам ставок:"]
+    lines = [f"{indent}🧩 ТИПЫ СТАВОК"]
     for key, label in CATEGORY_LABELS.items():
         d = details.get(key)
         if not d:
             lines.append(f"{indent}{label}: 0 ставок")
             continue
-        lines.append(
-            f"{indent}{label}: {d['total']} | ✅{d['wins'] or 0} ❌{d['losses'] or 0} "
-            f"➖{d['voids'] or 0} ⏳{d['pending'] or 0}"
-        )
-        lines.append(
-            f"{indent}   💰 {float(d['profit'] or 0):+.2f} ₽ · "
-            f"🟢{d['green'] or 0} 🟡{d['yellow'] or 0} 🔴{d['red'] or 0} ⚪{d['unknown'] or 0}"
-        )
+        lines.append(f"{indent}{label}: {d['total']} ставок")
+        lines.append(f"{indent}   ✅ {d['wins']} · ❌ {d['losses']} · ➖ {d['voids']} · ⏳ {d['pending']}")
+        lines.append(f"{indent}   🎯 Проходимость: {d['hit_rate']:.1f}% · ROI: {d['roi']:+.1f}%")
+        lines.append(f"{indent}   💰 Прибыль: {float(d['profit'] or 0):+.2f} ₽")
+        lines.append(f"{indent}   🎨 🟢{d['green'] or 0} 🟡{d['yellow'] or 0} 🔴{d['red'] or 0} ⚪{d['unknown'] or 0}")
     return lines
 
 
 def format_compact_stats(title, s, where="1=1", params=()):
     b = s["bands"]
+    decided = s['wins'] + s['losses']
+    hit_rate = s['wins'] / decided * 100 if decided else 0.0
     lines = [
         f"{title} — {s['total']} ставок",
         f"✅ Побед: {s['wins']} · ❌ Проигрышей: {s['losses']} · ➖ Возвратов: {s['voids']} · ⏳ Ожидают: {s['pending']}",
         f"💰 Прибыль: {s['profit']:+.2f} ₽ · ROI: {s['roi']:+.2f}%",
-        f"Кэфы: 🟢 {b.get('green') or 0} · 🟡 {b.get('yellow') or 0} · 🔴 {b.get('red') or 0} · ⚪ {b.get('unknown') or 0}",
+        f"🎯 Проходимость: {hit_rate:.1f}% ({decided} решённых без возвратов)",
+        f"🎨 Кэфы: 🟢 {b.get('green') or 0} · 🟡 {b.get('yellow') or 0} · 🔴 {b.get('red') or 0} · ⚪ {b.get('unknown') or 0}",
     ]
     lines.extend(format_category_lines(where, params, indent="  "))
     return "\n".join(lines)
@@ -329,30 +359,29 @@ def format_compact_stats(title, s, where="1=1", params=()):
 
 def format_stats(title, s, where="1=1", params=()):
     b = s["bands"]
+    decided = s['wins'] + s['losses']
+    hit_rate = s['wins'] / decided * 100 if decided else 0.0
     chunks = [
-        f"{title}",
-        "━━━━━━━━━━━━━━━━",
+        title, "━━━━━━━━━━━━━━━━",
         f"📌 Всего ставок: {s['total']}",
         f"✅ Побед: {s['wins']}   ❌ Проигрышей: {s['losses']}",
         f"➖ Возвратов: {s['voids']}   ⏳ Без результата: {s['pending']}",
+        f"🎯 Проходимость: {hit_rate:.1f}% ({decided} решённых без возвратов)",
         f"💰 Прибыль: {s['profit']:+.2f} ₽",
         f"📊 ROI: {s['roi']:+.2f}%",
-        "",
-        "🎯 КОЭФФИЦИЕНТЫ",
-        f"🟢 1.01–1.50: {b.get('green') or 0} ставок",
-        f"🟡 1.51–2.00: {b.get('yellow') or 0} ставок",
-        f"🔴 2.01+: {b.get('red') or 0} ставок",
-        f"⚪ Не определён: {b.get('unknown') or 0} ставок",
-        "",
-        "━━━━━━━━━━━━━━━━",
-        "🔎 ДЕТАЛЬНО: LIVE И ПРЕМАТЧ",
+        "", "🎨 АНАЛИЗ КОЭФФИЦИЕНТОВ",
     ]
+    for label, d in odds_band_breakdown(where, params):
+        chunks.append(f"{label}: {d['total'] or 0} ставок · ✅{d['wins'] or 0} ❌{d['losses'] or 0} ➖{d['voids'] or 0} ⏳{d['pending'] or 0}")
+        chunks.append(f"   🎯 Проходимость: {d['hit_rate']:.1f}% · 💰 {float(d['profit'] or 0):+.2f} ₽")
+    chunks.extend(["", "━━━━━━━━━━━━━━━━", "🔎 СРАВНЕНИЕ LIVE И ПРЕМАТЧ"])
     for mode, label in (("live", "🔴 LIVE"), ("pre", "⏳ ПРЕМАТЧ")):
         mode_where = f"({where}) AND mode=?"
         mode_params = tuple(params) + (mode,)
         mode_stats = calc_stats(mode_where, mode_params)
         chunks.extend(["", format_compact_stats(label, mode_stats, mode_where, mode_params)])
-    chunks.extend(["", "Расчёт: фиксированная ставка 100 ₽. Прибыль считается по сохранённым результатам бота."])
+    chunks.extend(["", "━━━━━━━━━━━━━━━━", "ℹ️ Фиксированная ставка: 100 ₽. Прибыль берётся из сохранённых результатов бота.",
+                   "🎯 Проходимость = победы / (победы + поражения); возвраты и незавершённые ставки не учитываются."])
     return "\n".join(chunks)
 
 
