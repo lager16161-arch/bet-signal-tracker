@@ -39,18 +39,21 @@ def save(path, value):
 
 
 def extract_message_text(message):
-    """Read regular Telegram text, then fall back to rich_message payloads."""
+    """Extract user-visible text from Telegram rich-message payloads."""
     for attr in ("text", "caption", "text_html", "caption_html"):
         value = getattr(message, attr, None)
         if isinstance(value, str) and value.strip():
             return value
 
-    # Some Telegram message formats may arrive as unknown API fields.
     candidates = []
     try:
         raw = message.to_dict()
         if isinstance(raw, dict) and raw.get("rich_message") is not None:
             candidates.append(raw["rich_message"])
+        # PTB may preserve unrecognized Telegram fields in api_kwargs.
+        api_kwargs = raw.get("api_kwargs") if isinstance(raw, dict) else None
+        if isinstance(api_kwargs, dict) and api_kwargs.get("rich_message") is not None:
+            candidates.append(api_kwargs["rich_message"])
     except Exception:
         pass
 
@@ -61,33 +64,39 @@ def extract_message_text(message):
     except Exception:
         pass
 
+    layout_words = {"left", "middle", "right", "center", "top", "bottom"}
+    ignored_keys = {
+        "url", "style", "type", "entities", "custom_emoji_id",
+        "align", "alignment", "horizontal_alignment", "vertical_alignment",
+        "valign", "justify", "position", "layout", "gravity",
+    }
+
     for rich in candidates:
         parts = []
 
-        def walk(value):
+        def walk(value, parent_key=None):
             if isinstance(value, dict):
-                # Prefer known text-bearing fields and preserve their order.
-                text_value = value.get("text")
-                if isinstance(text_value, str) and text_value.strip():
-                    parts.append(text_value)
+                # Only collect strings from text-bearing fields. Do not treat
+                # layout/alignment metadata as visible message content.
                 for key, child in value.items():
-                    if key in {"text", "url", "style", "type", "entities", "custom_emoji_id"}:
+                    if key in ignored_keys:
                         continue
-                    walk(child)
+                    if key in {"text", "title", "label", "caption"} and isinstance(child, str):
+                        if child.strip() and child.strip().lower() not in layout_words:
+                            parts.append(child.strip())
+                    elif isinstance(child, (dict, list)):
+                        walk(child, key)
             elif isinstance(value, list):
                 for child in value:
-                    walk(child)
-            elif isinstance(value, str):
-                # Rich blocks sometimes store their text as plain string values.
-                if value.strip():
-                    parts.append(value)
+                    walk(child, parent_key)
+            elif isinstance(value, str) and parent_key in {"text", "title", "label", "caption"}:
+                if value.strip() and value.strip().lower() not in layout_words:
+                    parts.append(value.strip())
 
         walk(rich)
-        # Deduplicate adjacent repeats that can arise from nested rich blocks.
         cleaned = []
         for part in parts:
-            part = part.strip()
-            if part and (not cleaned or cleaned[-1] != part):
+            if not cleaned or cleaned[-1] != part:
                 cleaned.append(part)
         result = "\\n".join(cleaned)
         if result.strip():
