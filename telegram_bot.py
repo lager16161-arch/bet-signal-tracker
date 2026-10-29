@@ -1,4 +1,4 @@
-import asyncio, json, logging, os, re, sqlite3
+import asyncio, json, logging, os, re, sqlite3, hashlib
 from pathlib import Path
 from datetime import datetime, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
@@ -119,6 +119,13 @@ def format_signal(text):
             cleaned_lines.append(line)
     return "\n".join(cleaned_lines).strip()
 
+def signal_hash(text, channel_key, category=None):
+    """Duplicate identity includes bet category so singles and accumulators stay separate."""
+    normalized = re.sub(r"\\s+", " ", format_signal(text).casefold()).strip()
+    category_key = (category or "unknown").strip().casefold()
+    return hashlib.sha256(f"{channel_key}|{category_key}|{normalized}".encode("utf-8")).hexdigest()
+
+
 def admins():
     return set(load(AF, []))
 
@@ -129,12 +136,15 @@ def conn():
     db.execute("""CREATE TABLE IF NOT EXISTS bets(
         id INTEGER PRIMARY KEY AUTOINCREMENT, created TEXT, channel_key TEXT, text TEXT,
         odds REAL, stake REAL, result TEXT, profit REAL, channel_message_id INTEGER,
-        category TEXT, sport TEXT, mode TEXT)""")
+        category TEXT, sport TEXT, mode TEXT, signal_hash TEXT)""")
     # Safe migration for databases created by earlier versions; does not delete existing data.
     columns = {r[1] for r in db.execute("PRAGMA table_info(bets)").fetchall()}
-    for name, typ in (("category", "TEXT"), ("sport", "TEXT"), ("mode", "TEXT")):
+    for name, typ in (("category", "TEXT"), ("sport", "TEXT"), ("mode", "TEXT"), ("signal_hash", "TEXT")):
         if name not in columns:
             db.execute(f"ALTER TABLE bets ADD COLUMN {name} {typ}")
+    # Backfill hashes for old records so the duplicate guard also covers existing history.
+    for row in db.execute("SELECT id, channel_key, text, category FROM bets WHERE signal_hash IS NULL").fetchall():
+        db.execute("UPDATE bets SET signal_hash=? WHERE id=?", (signal_hash(row["text"] or "", row["channel_key"] or "", row["category"]), row["id"]))
     db.commit()
     return db
 
@@ -446,6 +456,71 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in admins():
+        return await update.effective_message.reply_text("Нет доступа.")
+    try:
+        page = max(1, int(context.args[0])) if context.args else 1
+    except ValueError:
+        page = 1
+    limit, offset = 5, (page - 1) * 5
+    with conn() as db:
+        rows = db.execute("SELECT id, created, channel_key, text, odds, result FROM bets ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+        total = db.execute("SELECT COUNT(*) FROM bets").fetchone()[0]
+    if not rows:
+        return await update.effective_message.reply_text("История пуста или страница не существует.")
+    labels = {"win":"✅ Победа", "loss":"❌ Поражение", "void":"➖ Возврат", None:"⏳ Ожидает"}
+    parts = [f"🗂 История прогнозов · страница {page}\nВсего: {total}\n"]
+    for r in rows:
+        stamp = (r["created"] or "")[:16].replace("T", " ")
+        snippet = format_signal(r["text"]).replace("\\n", " ")
+        snippet = re.sub(r"\\s+", " ", snippet)[:180]
+        parts.append(f"№{r['id']} · {stamp}\n{CHANNELS.get(r['channel_key'], r['channel_key'])} · {labels.get(r['result'], '⏳ Ожидает')} · кэф {r['odds'] or '—'}\n{snippet}")
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"h:{page-1}"))
+    if offset + len(rows) < total:
+        nav.append(InlineKeyboardButton("Вперёд ➡️", callback_data=f"h:{page+1}"))
+    await update.effective_message.reply_text("\\n\\n".join(parts), reply_markup=InlineKeyboardMarkup([nav]) if nav else None)
+
+
+async def channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in admins():
+        return await update.effective_message.reply_text("Нет доступа.")
+    mapping = load(CF, {})
+    lines = ["⚙️ Настройки каналов", "Чтобы изменить канал: /connect, затем перешли пост из нужного канала и выбери направление.", ""]
+    for key, label in CHANNELS.items():
+        value = mapping.get(key)
+        lines.append(f"{label}: {'✅ подключён' if value else '⚠️ не подключён'}" + (f" ({value})" if value else ""))
+    await update.effective_message.reply_text("\\n".join(lines), reply_markup=MAIN_KEYBOARD)
+
+
+async def automatic_reports(app):
+    # Sends a daily report at 20:00 UTC; on Mondays it also includes a weekly summary.
+    while True:
+        now = datetime.now(timezone.utc)
+        target = now.replace(hour=20, minute=0, second=0, microsecond=0)
+        if target <= now:
+            target = target.replace(day=now.day) + __import__("datetime").timedelta(days=1)
+        await asyncio.sleep(max(60, (target - now).total_seconds()))
+        try:
+            day = datetime.now(timezone.utc).date().isoformat()
+            with conn() as db:
+                row = db.execute("SELECT COUNT(*) total, SUM(CASE WHEN result='win' THEN 1 ELSE 0 END) wins, SUM(CASE WHEN result='loss' THEN 1 ELSE 0 END) losses, SUM(CASE WHEN result IS NULL THEN 1 ELSE 0 END) pending, COALESCE(SUM(CASE WHEN result IS NOT NULL THEN profit ELSE 0 END),0) profit FROM bets WHERE substr(created,1,10)=?", (day,)).fetchone()
+            msg = (f"📊 Ежедневный отчёт · {day}\\nВсего: {row['total'] or 0} · ✅ {row['wins'] or 0} · ❌ {row['losses'] or 0} · ⏳ {row['pending'] or 0}\\nПрибыль: {float(row['profit'] or 0):+.2f} (в единицах учёта бота)")
+            if datetime.now(timezone.utc).weekday() == 0:
+                with conn() as db:
+                    weekly = db.execute("SELECT COUNT(*) total, SUM(CASE WHEN result='win' THEN 1 ELSE 0 END) wins, SUM(CASE WHEN result='loss' THEN 1 ELSE 0 END) losses, SUM(CASE WHEN result IS NULL THEN 1 ELSE 0 END) pending, COALESCE(SUM(CASE WHEN result IS NOT NULL THEN profit ELSE 0 END),0) profit FROM bets WHERE created >= ?", ((datetime.now(timezone.utc).date() - __import__("datetime").timedelta(days=7)).isoformat(),)).fetchone()
+                msg += (f"\\n\\n📅 Недельный отчёт (7 дней)\\nВсего: {weekly['total'] or 0} · ✅ {weekly['wins'] or 0} · ❌ {weekly['losses'] or 0} · ⏳ {weekly['pending'] or 0}\\nПрибыль: {float(weekly['profit'] or 0):+.2f} (в единицах учёта бота)")
+            for admin_id in admins():
+                try:
+                    await app.bot.send_message(chat_id=admin_id, text=msg)
+                except Exception:
+                    logging.warning("Could not send scheduled report to admin %s", admin_id)
+        except Exception:
+            logging.exception("Scheduled report failed")
+
+
 async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     if not message:
@@ -519,8 +594,8 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     coefficient = parse_odds(text)
     with conn() as db:
         cursor = db.execute(
-            "INSERT INTO bets(created,channel_key,text,odds,stake,category,sport,mode) VALUES(?,?,?,?,?,?,?,?)",
-            (datetime.now(timezone.utc).isoformat(), key, text, coefficient, STAKE, category, sport, mode),
+            "INSERT INTO bets(created,channel_key,text,odds,stake,category,sport,mode,signal_hash) VALUES(?,?,?,?,?,?,?,?,?)",
+            (datetime.now(timezone.utc).isoformat(), key, text, coefficient, STAKE, category, sport, mode, None),
         )
         bet_id = cursor.lastrowid
 
@@ -598,6 +673,23 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✅ Статистика сброшена. Можно начинать заново.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К статистике", callback_data="st:menu")]]),
         )
+    if data.startswith("h:"):
+        page = max(1, int(data.split(":")[1]))
+        limit, offset = 5, (page - 1) * 5
+        with conn() as db:
+            rows = db.execute("SELECT id, created, channel_key, text, odds, result FROM bets ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+            total = db.execute("SELECT COUNT(*) FROM bets").fetchone()[0]
+        if not rows:
+            return await query.edit_message_text("История пуста.")
+        labels = {"win":"✅ Победа", "loss":"❌ Поражение", "void":"➖ Возврат", None:"⏳ Ожидает"}
+        parts = [f"🗂 История прогнозов · страница {page}\\nВсего: {total}\\n"]
+        for r in rows:
+            snippet = re.sub(r"\\s+", " ", format_signal(r["text"]))[:180]
+            parts.append(f"№{r['id']} · {(r['created'] or '')[:16]}\\n{CHANNELS.get(r['channel_key'], r['channel_key'])} · {labels.get(r['result'], '⏳ Ожидает')} · кэф {r['odds'] or '—'}\\n{snippet}")
+        nav = []
+        if page > 1: nav.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"h:{page-1}"))
+        if offset + len(rows) < total: nav.append(InlineKeyboardButton("Вперёд ➡️", callback_data=f"h:{page+1}"))
+        return await query.edit_message_text("\\n\\n".join(parts), reply_markup=InlineKeyboardMarkup([nav]) if nav else None)
     if data.startswith("st:"):
         return await stats_callback(query, data)
     if data.startswith("c:"):
@@ -615,8 +707,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         category, sport, mode = classify(text, key)
         coefficient = parse_odds(text)
         with conn() as db:
-            cursor = db.execute("INSERT INTO bets(created,channel_key,text,odds,stake,category,sport,mode) VALUES(?,?,?,?,?,?,?,?)",
-                (datetime.now(timezone.utc).isoformat(), key, text, coefficient, STAKE, category, sport, mode))
+            cursor = db.execute("INSERT INTO bets(created,channel_key,text,odds,stake,category,sport,mode,signal_hash) VALUES(?,?,?,?,?,?,?,?,?)",
+                (datetime.now(timezone.utc).isoformat(), key, text, coefficient, STAKE, category, sport, mode, None))
             bet_id = cursor.lastrowid
         try:
             pretty_text = format_signal(text)
@@ -665,13 +757,17 @@ async def main():
     app.add_handler(CommandHandler("connect", connect_channel))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("report", report))
+    app.add_handler(CommandHandler("history", history))
+    app.add_handler(CommandHandler("channels", channels))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, incoming))
     app.add_handler(CallbackQueryHandler(button))
     await app.initialize(); await app.start(); await app.updater.start_polling()
+    report_task = asyncio.create_task(automatic_reports(app))
     print("Бот запущен. Остановка: Ctrl+C")
     try:
         await asyncio.Event().wait()
     finally:
+        report_task.cancel()
         await app.updater.stop(); await app.stop(); await app.shutdown()
 
 
