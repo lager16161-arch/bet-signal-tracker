@@ -486,7 +486,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Keep the signal text intact and append only the requested two emoji.
         final_emoji = {"w":"✅", "l":"❌", "v":"➖"}[short_result]
         band = odds_band(row["odds"])
-        final_text = (row["text"].rstrip() + "\n" + band + final_emoji)
+        final_text = (format_signal(row["text"]).rstrip() + "\n" + band + final_emoji)
         try:
             await query.edit_message_text(final_text, reply_markup=None)
         except Exception:
