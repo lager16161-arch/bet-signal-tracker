@@ -493,8 +493,12 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Automatic routing: only the bot owner/admin can submit forwarded signals.
     if update.effective_user is None or update.effective_user.id not in admins():
         return await message.reply_text("Автопубликация доступна только администратору.")
-    if not forwarded_chat or getattr(forwarded_chat, "type", None) != "channel":
-        return await message.reply_text("Пришли прогноз пересылкой из Telegram-канала, чтобы бот определил его тип.")
+    # Telegram may represent a forwarded post as a user-origin or hide the
+    # source chat details (for example, depending on source/channel privacy).
+    # Since only admins are allowed to publish, classify by the forwarded
+    # message content rather than requiring origin.chat.type == "channel".
+    if origin is None:
+        return await message.reply_text("Не вижу, что это пересланное сообщение. Перешли прогноз боту ещё раз.")
 
     category, sport, mode = classify(text, "")
     key = f"{sport}_{mode}"
