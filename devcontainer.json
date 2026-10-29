@@ -1,0 +1,4 @@
+{
+  "name": "Bet Signal Tracker",
+  "postStartCommand": "bash -lc \"cd /workspaces/bet-signal-tracker && if ! pgrep -f '[t]elegram_bot.py' >/dev/null; then nohup python telegram_bot.py >> /tmp/telegram_bot.log 2>&1 < /dev/null & fi\""
+}
