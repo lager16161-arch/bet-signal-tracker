@@ -107,7 +107,7 @@ def extract_message_text(message):
 
 def format_signal(text):
     """Preserve the original signal layout while removing the source channel footer."""
-    text = (text or "").replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
+    text = (text or "").replace("\\r\n", "\n").replace("\n", "\n").replace("\\r", "\n")
     lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
     cleaned_lines = []
     for line in lines:
@@ -275,21 +275,85 @@ def calc_stats(where="1=1", params=()):
     return result
 
 
-def format_stats(title, s):
+def category_breakdown(where, params=()):
+    """Detailed results for each existing bet category, using the same stored accounting."""
+    output = {}
+    with conn() as db:
+        rows = db.execute(f"""SELECT category,
+            COUNT(*) total,
+            SUM(CASE WHEN result IN ('w','win') THEN 1 ELSE 0 END) wins,
+            SUM(CASE WHEN result IN ('l','loss') THEN 1 ELSE 0 END) losses,
+            SUM(CASE WHEN result IN ('v','void') THEN 1 ELSE 0 END) voids,
+            SUM(CASE WHEN result IS NULL THEN 1 ELSE 0 END) pending,
+            COALESCE(SUM(CASE WHEN result IS NOT NULL THEN COALESCE(profit,0) ELSE 0 END),0) profit,
+            SUM(CASE WHEN odds BETWEEN 1.0 AND 1.50 THEN 1 ELSE 0 END) green,
+            SUM(CASE WHEN odds > 1.50 AND odds <= 2.00 THEN 1 ELSE 0 END) yellow,
+            SUM(CASE WHEN odds > 2.00 THEN 1 ELSE 0 END) red,
+            SUM(CASE WHEN odds IS NULL OR odds < 1.0 THEN 1 ELSE 0 END) unknown
+            FROM bets WHERE {where} GROUP BY category""", params).fetchall()
+    for row in rows:
+        output[row['category']] = dict(row)
+    return output
+
+
+def format_category_lines(where, params=(), indent=""):
+    details = category_breakdown(where, params)
+    lines = [f"{indent}🧩 По типам ставок:"]
+    for key, label in CATEGORY_LABELS.items():
+        d = details.get(key)
+        if not d:
+            lines.append(f"{indent}{label}: 0 ставок")
+            continue
+        lines.append(
+            f"{indent}{label}: {d['total']} | ✅{d['wins'] or 0} ❌{d['losses'] or 0} "
+            f"➖{d['voids'] or 0} ⏳{d['pending'] or 0}"
+        )
+        lines.append(
+            f"{indent}   💰 {float(d['profit'] or 0):+.2f} ₽ · "
+            f"🟢{d['green'] or 0} 🟡{d['yellow'] or 0} 🔴{d['red'] or 0} ⚪{d['unknown'] or 0}"
+        )
+    return lines
+
+
+def format_compact_stats(title, s, where="1=1", params=()):
     b = s["bands"]
-    return (f"{title}\n"
-            f"Всего: {s['total']}\n✅ Побед: {s['wins']}\n❌ Проигрышей: {s['losses']}\n"
-            f"➖ Возвратов: {s['voids']}\n⏳ Без результата: {s['pending']}\n"
-            f"Прибыль: {s['profit']:+.2f} ₽\nROI: {s['roi']:+.2f}%\n\n"
-            f"Коэффициенты в этой категории:\n"
-            f"🟢 1.01–1.50: {b['green'] or 0}\n🟡 1.51–2.00: {b['yellow'] or 0}\n"
-            f"🔴 2.01+: {b['red'] or 0}\n⚪ Коэффициент не найден: {b['unknown'] or 0}\n\n"
-            f"Типы ставок в этом разделе:\n"
-            f"🎯 Ординары: {s['categories'].get('single', 0)}\n"
-            f"💰 Крупные ординары: {s['categories'].get('big_single', 0)}\n"
-            f"📈 Экспрессы: {s['categories'].get('express', 0)}\n"
-            f"🚀 Крупные экспрессы: {s['categories'].get('big_express', 0)}\n\n"
-            f"Расчёт: 100 ₽ на каждую ставку. Суммы валют из сигнала игнорируются.")
+    lines = [
+        f"{title} — {s['total']} ставок",
+        f"✅ Побед: {s['wins']} · ❌ Проигрышей: {s['losses']} · ➖ Возвратов: {s['voids']} · ⏳ Ожидают: {s['pending']}",
+        f"💰 Прибыль: {s['profit']:+.2f} ₽ · ROI: {s['roi']:+.2f}%",
+        f"Кэфы: 🟢 {b.get('green') or 0} · 🟡 {b.get('yellow') or 0} · 🔴 {b.get('red') or 0} · ⚪ {b.get('unknown') or 0}",
+    ]
+    lines.extend(format_category_lines(where, params, indent="  "))
+    return "\n".join(lines)
+
+
+def format_stats(title, s, where="1=1", params=()):
+    b = s["bands"]
+    chunks = [
+        f"{title}",
+        "━━━━━━━━━━━━━━━━",
+        f"📌 Всего ставок: {s['total']}",
+        f"✅ Побед: {s['wins']}   ❌ Проигрышей: {s['losses']}",
+        f"➖ Возвратов: {s['voids']}   ⏳ Без результата: {s['pending']}",
+        f"💰 Прибыль: {s['profit']:+.2f} ₽",
+        f"📊 ROI: {s['roi']:+.2f}%",
+        "",
+        "🎯 КОЭФФИЦИЕНТЫ",
+        f"🟢 1.01–1.50: {b.get('green') or 0} ставок",
+        f"🟡 1.51–2.00: {b.get('yellow') or 0} ставок",
+        f"🔴 2.01+: {b.get('red') or 0} ставок",
+        f"⚪ Не определён: {b.get('unknown') or 0} ставок",
+        "",
+        "━━━━━━━━━━━━━━━━",
+        "🔎 ДЕТАЛЬНО: LIVE И ПРЕМАТЧ",
+    ]
+    for mode, label in (("live", "🔴 LIVE"), ("pre", "⏳ ПРЕМАТЧ")):
+        mode_where = f"({where}) AND mode=?"
+        mode_params = tuple(params) + (mode,)
+        mode_stats = calc_stats(mode_where, mode_params)
+        chunks.extend(["", format_compact_stats(label, mode_stats, mode_where, mode_params)])
+    chunks.extend(["", "Расчёт: фиксированная ставка 100 ₽. Прибыль считается по сохранённым результатам бота."])
+    return "\n".join(chunks)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -380,23 +444,21 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def stats_callback(query, data):
     if data == "st:all":
-        return await query.edit_message_text(format_stats("📊 Общая статистика", calc_stats()), reply_markup=stat_keyboard())
+        return await query.edit_message_text(format_stats("📊 Общая статистика", calc_stats(), "1=1", ()), reply_markup=stat_keyboard())
     if data == "st:channels":
         with conn() as db:
-            rows = db.execute("SELECT channel_key, category, COUNT(*) n FROM bets GROUP BY channel_key, category ORDER BY channel_key, category").fetchall()
-        by_channel = {}
-        for row in rows:
-            item = by_channel.setdefault(row["channel_key"], {"total": 0, "categories": {}})
-            item["total"] += row["n"]
-            item["categories"][row["category"]] = row["n"]
-        chunks = []
-        for key, item in by_channel.items():
-            chunks.append(
-                f"{CHANNELS.get(key, key)} — {item['total']} ставок\n" +
-                " · ".join(f"{CATEGORY_LABELS[cat]}: {item['categories'].get(cat, 0)}" for cat in CATEGORY_LABELS)
-            )
-        text = "📺 Статистика по каналам\n\n" + ("\n\n".join(chunks) if chunks else "Пока нет ставок.")
-        return await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К меню", callback_data="st:menu")]]))
+            rows = db.execute("SELECT DISTINCT channel_key FROM bets ORDER BY channel_key").fetchall()
+        buttons = [[InlineKeyboardButton(CHANNELS.get(r["channel_key"], r["channel_key"]), callback_data="st:channel:" + r["channel_key"])] for r in rows]
+        buttons.append([InlineKeyboardButton("◀️ К меню", callback_data="st:menu")])
+        return await query.edit_message_text("📺 Выбери канал для подробной статистики:", reply_markup=InlineKeyboardMarkup(buttons))
+    if data.startswith("st:channel:"):
+        key = data.split(":", 2)[2]
+        title = "📺 " + CHANNELS.get(key, key)
+        text = format_stats(title, calc_stats("channel_key=?", (key,)), "channel_key=?", (key,))
+        return await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ К списку каналов", callback_data="st:channels")],
+            [InlineKeyboardButton("◀️ К меню статистики", callback_data="st:menu")],
+        ]))
     bits = data.split(":")
     kind, value = bits[1], bits[2]
     if kind == "sport":
@@ -407,7 +469,7 @@ async def stats_callback(query, data):
     else:
         names = {"single":"🎯 Обычные ставки", "big_single":"💰 Крупные ставки", "express":"📈 Экспрессы", "big_express":"🚀 Крупные экспрессы"}
         title, where, params = names.get(value, value), "category=?", (value,)
-    return await query.edit_message_text(format_stats(title, calc_stats(where, params)), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К меню", callback_data="st:menu")]]))
+    return await query.edit_message_text(format_stats(title, calc_stats(where, params), where, params), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К меню", callback_data="st:menu")]]))
 
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
