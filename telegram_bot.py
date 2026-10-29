@@ -1,7 +1,7 @@
 import asyncio, json, logging, os, re, sqlite3
 from pathlib import Path
 from datetime import datetime, timezone
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 
 logging.basicConfig(level=logging.INFO)
@@ -14,6 +14,17 @@ CHANNELS = {
 }
 CF, AF, DB = Path("telegram_channels.json"), Path("telegram_admins.json"), Path("telegram_stats.db")
 STAKE = 100.0
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [["📊 Статистика", "📈 Отчёт"]],
+    resize_keyboard=True,
+    is_persistent=True,
+)
+CATEGORY_LABELS = {
+    "single": "🎯 Ординары",
+    "big_single": "💰 Крупные ординары",
+    "express": "📈 Экспрессы",
+    "big_express": "🚀 Крупные экспрессы",
+}
 
 
 def load(path, default):
@@ -25,6 +36,15 @@ def load(path, default):
 
 def save(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def extract_message_text(message):
+    """Read plain text or caption; formatting entities (including Premium custom emoji) remain in the text."""
+    for attr in ("text", "caption", "text_html", "caption_html"):
+        value = getattr(message, attr, None)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
 
 
 def admins():
@@ -119,6 +139,7 @@ def stat_keyboard():
         [InlineKeyboardButton("🔴 Все лайвы", callback_data="st:mode:live"), InlineKeyboardButton("⏳ Весь прематч", callback_data="st:mode:pre")],
         [InlineKeyboardButton("📈 Экспрессы", callback_data="st:category:express"), InlineKeyboardButton("🚀 Крупные экспрессы", callback_data="st:category:big_express")],
         [InlineKeyboardButton("🎯 Обычные", callback_data="st:category:single"), InlineKeyboardButton("💰 Крупные", callback_data="st:category:big_single")],
+        [InlineKeyboardButton("🧹 Сбросить статистику", callback_data="reset:confirm")],
     ]
     return InlineKeyboardMarkup(rows)
 
@@ -139,12 +160,15 @@ def calc_stats(where="1=1", params=()):
           SUM(CASE WHEN odds > 2.00 THEN 1 ELSE 0 END) red,
           SUM(CASE WHEN odds IS NULL OR odds < 1.0 THEN 1 ELSE 0 END) unknown
           FROM bets WHERE {where}""", params).fetchone()
+        categories = db.execute(f"""SELECT category, COUNT(*) n FROM bets
+          WHERE {where} GROUP BY category""", params).fetchall()
     result = dict(row)
     for key in ("total", "wins", "losses", "voids", "pending"):
         result[key] = result[key] or 0
     result["profit"] = result["profit"] or 0.0
     result["roi"] = result["profit"] / result["resolved_stake"] * 100 if result["resolved_stake"] else 0.0
     result["bands"] = dict(bands)
+    result["categories"] = {r["category"]: r["n"] for r in categories}
     return result
 
 
@@ -157,12 +181,31 @@ def format_stats(title, s):
             f"Коэффициенты в этой категории:\n"
             f"🟢 1.01–1.50: {b['green'] or 0}\n🟡 1.51–2.00: {b['yellow'] or 0}\n"
             f"🔴 2.01+: {b['red'] or 0}\n⚪ Коэффициент не найден: {b['unknown'] or 0}\n\n"
+            f"Типы ставок в этом разделе:\n"
+            f"🎯 Ординары: {s['categories'].get('single', 0)}\n"
+            f"💰 Крупные ординары: {s['categories'].get('big_single', 0)}\n"
+            f"📈 Экспрессы: {s['categories'].get('express', 0)}\n"
+            f"🚀 Крупные экспрессы: {s['categories'].get('big_express', 0)}\n\n"
             f"Расчёт: 100 ₽ на каждую ставку. Суммы валют из сигнала игнорируются.")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     known = admins(); known.add(update.effective_user.id); save(AF, sorted(known))
-    await update.effective_message.reply_text("Бот работает ✅\nПодключение канала: перешли мне любой пост ИЗ нужного канала и выбери его название.\nСтатистика: /stats или /report")
+    await update.effective_message.reply_text(
+        "Бот работает ✅\nЧтобы подключить канал назначения, отправь /connect и затем перешли любой пост ИЗ этого канала.\n"
+        "Чтобы опубликовать сигнал, просто перешли его боту и выбери канал.\n"
+        "Статистику и отчёт можно открыть кнопками снизу или командами /stats и /report.",
+        reply_markup=MAIN_KEYBOARD,
+    )
+
+
+async def connect_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in admins():
+        return await update.effective_message.reply_text("Нет доступа.")
+    context.user_data["awaiting_channel_connection"] = True
+    await update.effective_message.reply_text(
+        "Перешли любой пост ИЗ канала, который нужно подключить как канал назначения."
+    )
 
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -178,21 +221,50 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows = db.execute("SELECT channel_key, COUNT(*) n, COALESCE(SUM(CASE WHEN result IS NOT NULL THEN COALESCE(profit,0) ELSE 0 END),0) p FROM bets GROUP BY channel_key ORDER BY channel_key").fetchall()
     if not rows:
         return await update.effective_message.reply_text("Пока нет опубликованных ставок.")
-    await update.effective_message.reply_text("📈 Отчёт по каналам\n\n" + "\n\n".join(f"{CHANNELS.get(r['channel_key'], r['channel_key'])}\nСтавок: {r['n']}\nПрибыль: {r['p']:+.2f} ₽" for r in rows))
+    await update.effective_message.reply_text(
+        "📈 Отчёт по каналам\n\n" + "\n\n".join(f"{CHANNELS.get(r['channel_key'], r['channel_key'])}\nСтавок: {r['n']}\nПрибыль: {r['p']:+.2f} ₽" for r in rows),
+        reply_markup=MAIN_KEYBOARD,
+    )
 
 
 async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     if not message:
         return
+    # Persistent menu buttons should never be mistaken for bet signals.
+    command_text = (message.text or "").strip()
+    if command_text == "📊 Статистика":
+        if update.effective_user.id not in admins():
+            return await message.reply_text("Нет доступа.", reply_markup=MAIN_KEYBOARD)
+        return await message.reply_text("📊 Выбери раздел статистики:", reply_markup=stat_keyboard())
+    if command_text == "📈 Отчёт":
+        return await report(update, context)
     origin = getattr(message, "forward_origin", None)
     forwarded_chat = getattr(origin, "chat", None) if origin else None
-    if forwarded_chat and getattr(forwarded_chat, "type", None) == "channel":
+    if context.user_data.get("awaiting_channel_connection"):
+        if not forwarded_chat or getattr(forwarded_chat, "type", None) != "channel":
+            return await message.reply_text("Не вижу источник-канал. Перешли пост именно из нужного канала.")
         context.user_data["connect_id"] = forwarded_chat.id
-        return await message.reply_text("Выбери, какой канал подключаем:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data="c:" + key)] for key, label in CHANNELS.items()]))
-    text = message.text or message.caption or ""
+        context.user_data["awaiting_channel_connection"] = False
+        return await message.reply_text(
+            "Выбери, какой канал подключаем:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data="c:" + key)] for key, label in CHANNELS.items()])
+        )
+    # A forwarded channel post is a signal by default. Use /connect explicitly for channel setup,
+    # so channel-origin messages (including Premium-formatted posts) aren't intercepted as setup.
+    text = extract_message_text(message)
     if not text.strip():
-        return await message.reply_text("Не вижу текста. Перешли текстовый сигнал.")
+        logging.warning(
+            "Forwarded/message has no readable text: content_type=%s, forward_origin=%s, caption_entities=%s, entities=%s",
+            getattr(message, "effective_attachment", None).__class__.__name__ if getattr(message, "effective_attachment", None) is not None else "text-or-empty",
+            type(origin).__name__ if origin else None,
+            bool(getattr(message, "caption_entities", None)),
+            bool(getattr(message, "entities", None)),
+        )
+        return await message.reply_text(
+            "Не удалось прочитать текст этого сообщения. Если это пост с Telegram Premium, попробуй переслать его ещё раз. "
+            "Если снова не получится, пришли скриншот самого поста — проверим, что именно Telegram передаёт боту."
+        )
     context.user_data["pending_text"] = text
     await message.reply_text("Выбери канал:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data="s:" + key)] for key, label in CHANNELS.items()]))
 
@@ -202,8 +274,19 @@ async def stats_callback(query, data):
         return await query.edit_message_text(format_stats("📊 Общая статистика", calc_stats()), reply_markup=stat_keyboard())
     if data == "st:channels":
         with conn() as db:
-            rows = db.execute("SELECT channel_key, COUNT(*) total FROM bets GROUP BY channel_key ORDER BY channel_key").fetchall()
-        text = "📺 Статистика по каналам\n\n" + ("\n".join(f"{CHANNELS.get(r['channel_key'],r['channel_key'])}: {r['total']} ставок" for r in rows) if rows else "Пока нет ставок.")
+            rows = db.execute("SELECT channel_key, category, COUNT(*) n FROM bets GROUP BY channel_key, category ORDER BY channel_key, category").fetchall()
+        by_channel = {}
+        for row in rows:
+            item = by_channel.setdefault(row["channel_key"], {"total": 0, "categories": {}})
+            item["total"] += row["n"]
+            item["categories"][row["category"]] = row["n"]
+        chunks = []
+        for key, item in by_channel.items():
+            chunks.append(
+                f"{CHANNELS.get(key, key)} — {item['total']} ставок\n" +
+                " · ".join(f"{CATEGORY_LABELS[cat]}: {item['categories'].get(cat, 0)}" for cat in CATEGORY_LABELS)
+            )
+        text = "📺 Статистика по каналам\n\n" + ("\n\n".join(chunks) if chunks else "Пока нет ставок.")
         return await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К меню", callback_data="st:menu")]]))
     bits = data.split(":")
     kind, value = bits[1], bits[2]
@@ -226,6 +309,24 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     if data == "st:menu":
         return await query.edit_message_text("📊 Выбери раздел статистики:", reply_markup=stat_keyboard())
+    if data == "reset:confirm":
+        return await query.edit_message_text(
+            "⚠️ Сбросить ВСЮ статистику? Все записанные ставки и их результаты будут удалены. "
+            "Каналы и настройки останутся на месте.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Да, сбросить", callback_data="reset:yes"),
+                InlineKeyboardButton("❌ Отмена", callback_data="st:menu"),
+            ]]),
+        )
+    if data == "reset:yes":
+        with conn() as db:
+            db.execute("DELETE FROM bets")
+            # Reset SQLite's generated bet IDs as well, for a clean new run.
+            db.execute("DELETE FROM sqlite_sequence WHERE name='bets'")
+        return await query.edit_message_text(
+            "✅ Статистика сброшена. Можно начинать заново.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К статистике", callback_data="st:menu")]]),
+        )
     if data.startswith("st:"):
         return await stats_callback(query, data)
     if data.startswith("c:"):
@@ -289,6 +390,7 @@ async def main():
     conn().close()
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("connect", connect_channel))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("report", report))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, incoming))
