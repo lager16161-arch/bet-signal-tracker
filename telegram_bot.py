@@ -39,11 +39,59 @@ def save(path, value):
 
 
 def extract_message_text(message):
-    """Read plain text or caption; formatting entities (including Premium custom emoji) remain in the text."""
+    """Read regular Telegram text, then fall back to rich_message payloads."""
     for attr in ("text", "caption", "text_html", "caption_html"):
         value = getattr(message, attr, None)
         if isinstance(value, str) and value.strip():
             return value
+
+    # Some Telegram message formats may arrive as unknown API fields.
+    candidates = []
+    try:
+        raw = message.to_dict()
+        if isinstance(raw, dict) and raw.get("rich_message") is not None:
+            candidates.append(raw["rich_message"])
+    except Exception:
+        pass
+
+    try:
+        api_kwargs = getattr(message, "api_kwargs", None)
+        if isinstance(api_kwargs, dict) and api_kwargs.get("rich_message") is not None:
+            candidates.append(api_kwargs["rich_message"])
+    except Exception:
+        pass
+
+    for rich in candidates:
+        parts = []
+
+        def walk(value):
+            if isinstance(value, dict):
+                # Prefer known text-bearing fields and preserve their order.
+                text_value = value.get("text")
+                if isinstance(text_value, str) and text_value.strip():
+                    parts.append(text_value)
+                for key, child in value.items():
+                    if key in {"text", "url", "style", "type", "entities", "custom_emoji_id"}:
+                        continue
+                    walk(child)
+            elif isinstance(value, list):
+                for child in value:
+                    walk(child)
+            elif isinstance(value, str):
+                # Rich blocks sometimes store their text as plain string values.
+                if value.strip():
+                    parts.append(value)
+
+        walk(rich)
+        # Deduplicate adjacent repeats that can arise from nested rich blocks.
+        cleaned = []
+        for part in parts:
+            part = part.strip()
+            if part and (not cleaned or cleaned[-1] != part):
+                cleaned.append(part)
+        result = "\\n".join(cleaned)
+        if result.strip():
+            return result
     return ""
 
 
@@ -255,7 +303,11 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = extract_message_text(message)
     if not text.strip():
         # Temporary diagnostics: log the Telegram message payload to identify why Premium forwards have no text.
-        logging.warning("DEBUG MESSAGE: %s", message.to_dict())
+        logging.warning("DEBUG MESSAGE: rich_message_present=%s, api_kwargs_keys=%s",
+                        bool(getattr(message, "api_kwargs", {}).get("rich_message"))
+                        if isinstance(getattr(message, "api_kwargs", None), dict) else False,
+                        list(getattr(message, "api_kwargs", {}).keys())
+                        if isinstance(getattr(message, "api_kwargs", None), dict) else [])
         logging.warning(
             "Forwarded/message has no readable text: content_type=%s, forward_origin=%s, caption_entities=%s, entities=%s",
             getattr(message, "effective_attachment", None).__class__.__name__ if getattr(message, "effective_attachment", None) is not None else "text-or-empty",
