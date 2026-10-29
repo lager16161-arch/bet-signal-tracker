@@ -328,17 +328,20 @@ def odds_band_breakdown(where, params=()):
 
 def format_category_lines(where, params=(), indent=""):
     details = category_breakdown(where, params)
-    lines = [f"{indent}🧩 ТИПЫ СТАВОК"]
+    lines = [f"{indent}╭─ 🧩 РАЗБИВКА ПО ТИПАМ СТАВОК"]
     for key, label in CATEGORY_LABELS.items():
         d = details.get(key)
+        lines.extend([f"{indent}│", f"{indent}├─ {label}"])
         if not d:
-            lines.append(f"{indent}{label}: 0 ставок")
+            lines.append(f"{indent}│  Всего: 0 ставок")
             continue
-        lines.append(f"{indent}{label}: {d['total']} ставок")
-        lines.append(f"{indent}   ✅ {d['wins']} · ❌ {d['losses']} · ➖ {d['voids']} · ⏳ {d['pending']}")
-        lines.append(f"{indent}   🎯 Проходимость: {d['hit_rate']:.1f}% · ROI: {d['roi']:+.1f}%")
-        lines.append(f"{indent}   💰 Прибыль: {float(d['profit'] or 0):+.2f} ₽")
-        lines.append(f"{indent}   🎨 🟢{d['green'] or 0} 🟡{d['yellow'] or 0} 🔴{d['red'] or 0} ⚪{d['unknown'] or 0}")
+        lines.append(f"{indent}│  Всего: {d['total']} ставок")
+        lines.append(f"{indent}│  ✅ {d['wins']} побед  ·  ❌ {d['losses']} поражений")
+        lines.append(f"{indent}│  ➖ {d['voids']} возвратов  ·  ⏳ {d['pending']} ожидают")
+        lines.append(f"{indent}│  🎯 Проходимость: {d['hit_rate']:.1f}%")
+        lines.append(f"{indent}│  📈 ROI: {d['roi']:+.1f}%  ·  💰 Прибыль: {float(d['profit'] or 0):+.2f} ₽")
+        lines.append(f"{indent}│  🎨 Кэфы: 🟢 {d['green'] or 0}  🟡 {d['yellow'] or 0}  🔴 {d['red'] or 0}  ⚪ {d['unknown'] or 0}")
+    lines.append(f"{indent}╰────────────────")
     return lines
 
 
@@ -347,11 +350,16 @@ def format_compact_stats(title, s, where="1=1", params=()):
     decided = s['wins'] + s['losses']
     hit_rate = s['wins'] / decided * 100 if decided else 0.0
     lines = [
-        f"{title} — {s['total']} ставок",
-        f"✅ Побед: {s['wins']} · ❌ Проигрышей: {s['losses']} · ➖ Возвратов: {s['voids']} · ⏳ Ожидают: {s['pending']}",
-        f"💰 Прибыль: {s['profit']:+.2f} ₽ · ROI: {s['roi']:+.2f}%",
-        f"🎯 Проходимость: {hit_rate:.1f}% ({decided} решённых без возвратов)",
-        f"🎨 Кэфы: 🟢 {b.get('green') or 0} · 🟡 {b.get('yellow') or 0} · 🔴 {b.get('red') or 0} · ⚪ {b.get('unknown') or 0}",
+        f"┌─ {title}",
+        f"│ 📌 Всего ставок: {s['total']}",
+        f"│ ✅ Победы: {s['wins']}  ·  ❌ Поражения: {s['losses']}",
+        f"│ ➖ Возвраты: {s['voids']}  ·  ⏳ Ожидают: {s['pending']}",
+        f"│ 🎯 Проходимость: {hit_rate:.1f}% ({decided} решённых)",
+        f"│ 💰 Прибыль: {s['profit']:+.2f} ₽",
+        f"│ 📊 ROI: {s['roi']:+.2f}%",
+        f"│ 🎨 Кэфы: 🟢 {b.get('green') or 0}  🟡 {b.get('yellow') or 0}  🔴 {b.get('red') or 0}  ⚪ {b.get('unknown') or 0}",
+        f"└────────────────",
+        "",
     ]
     lines.extend(format_category_lines(where, params, indent="  "))
     return "\n".join(lines)
@@ -362,26 +370,41 @@ def format_stats(title, s, where="1=1", params=()):
     decided = s['wins'] + s['losses']
     hit_rate = s['wins'] / decided * 100 if decided else 0.0
     chunks = [
-        title, "━━━━━━━━━━━━━━━━",
-        f"📌 Всего ставок: {s['total']}",
-        f"✅ Побед: {s['wins']}   ❌ Проигрышей: {s['losses']}",
-        f"➖ Возвратов: {s['voids']}   ⏳ Без результата: {s['pending']}",
-        f"🎯 Проходимость: {hit_rate:.1f}% ({decided} решённых без возвратов)",
-        f"💰 Прибыль: {s['profit']:+.2f} ₽",
-        f"📊 ROI: {s['roi']:+.2f}%",
-        "", "🎨 АНАЛИЗ КОЭФФИЦИЕНТОВ",
+        f"📊 {title}",
+        "━━━━━━━━━━━━━━━━━━",
+        "📌 ОСНОВНЫЕ ПОКАЗАТЕЛИ",
+        f"├ Всего ставок: {s['total']}",
+        f"├ ✅ Победы: {s['wins']}  ·  ❌ Поражения: {s['losses']}",
+        f"├ ➖ Возвраты: {s['voids']}  ·  ⏳ Ожидают: {s['pending']}",
+        f"├ 🎯 Проходимость: {hit_rate:.1f}%",
+        f"├ 💰 Прибыль: {s['profit']:+.2f} ₽",
+        f"└ 📊 ROI: {s['roi']:+.2f}%",
+        "",
+        "🎨 АНАЛИЗ КОЭФФИЦИЕНТОВ",
+        "━━━━━━━━━━━━━━━━━━",
     ]
     for label, d in odds_band_breakdown(where, params):
-        chunks.append(f"{label}: {d['total'] or 0} ставок · ✅{d['wins'] or 0} ❌{d['losses'] or 0} ➖{d['voids'] or 0} ⏳{d['pending'] or 0}")
-        chunks.append(f"   🎯 Проходимость: {d['hit_rate']:.1f}% · 💰 {float(d['profit'] or 0):+.2f} ₽")
-    chunks.extend(["", "━━━━━━━━━━━━━━━━", "🔎 СРАВНЕНИЕ LIVE И ПРЕМАТЧ"])
-    for mode, label in (("live", "🔴 LIVE"), ("pre", "⏳ ПРЕМАТЧ")):
+        chunks.extend([
+            f"🔹 {label}",
+            f"   Ставок: {d['total'] or 0}  ·  ✅ {d['wins'] or 0}  ·  ❌ {d['losses'] or 0}",
+            f"   ➖ {d['voids'] or 0}  ·  ⏳ {d['pending'] or 0}",
+            f"   🎯 Проходимость: {d['hit_rate']:.1f}%  ·  💰 {float(d['profit'] or 0):+.2f} ₽",
+            "",
+        ])
+    chunks.extend(["━━━━━━━━━━━━━━━━━━", "🔎 LIVE И ПРЕМАТЧ", "━━━━━━━━━━━━━━━━━━"])
+    for mode, label in (("live", "🔴 LIVE"), ("pre", "⏳ ДО НАЧАЛА")):
         mode_where = f"({where}) AND mode=?"
         mode_params = tuple(params) + (mode,)
         mode_stats = calc_stats(mode_where, mode_params)
         chunks.extend(["", format_compact_stats(label, mode_stats, mode_where, mode_params)])
-    chunks.extend(["", "━━━━━━━━━━━━━━━━", "ℹ️ Фиксированная ставка: 100 ₽. Прибыль берётся из сохранённых результатов бота.",
-                   "🎯 Проходимость = победы / (победы + поражения); возвраты и незавершённые ставки не учитываются."])
+    chunks.extend([
+        "",
+        "ℹ️ ПАРАМЕТРЫ РАСЧЁТА",
+        "• Фиксированная ставка: 100 ₽",
+        "• Прибыль рассчитывается по сохранённым результатам бота.",
+        "• Проходимость = победы / (победы + поражения).",
+        "• Возвраты и ставки без результата не входят в расчёт проходимости.",
+    ])
     return "\n".join(chunks)
 
 
@@ -389,7 +412,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     known = admins(); known.add(update.effective_user.id); save(AF, sorted(known))
     await update.effective_message.reply_text(
         "Бот работает ✅\nЧтобы подключить канал назначения, отправь /connect и затем перешли любой пост ИЗ этого канала.\n"
-        "Чтобы опубликовать сигнал, просто перешли его боту и выбери канал.\n"
+        "Чтобы опубликовать сигнал, просто перешли его боту — он сам выберет канал по виду спорта и режиму (до начала/лайв).\n"
         "Статистику и отчёт можно открыть кнопками снизу или командами /stats и /report.",
         reply_markup=MAIN_KEYBOARD,
     )
@@ -467,8 +490,52 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Не удалось прочитать текст этого сообщения. Если это пост с Telegram Premium, попробуй переслать его ещё раз. "
             "Если снова не получится, пришли скриншот самого поста — проверим, что именно Telegram передаёт боту."
         )
-    context.user_data["pending_text"] = text
-    await message.reply_text("Выбери канал:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data="s:" + key)] for key, label in CHANNELS.items()]))
+    # Automatic routing: only the bot owner/admin can submit forwarded signals.
+    if update.effective_user is None or update.effective_user.id not in admins():
+        return await message.reply_text("Автопубликация доступна только администратору.")
+    if not forwarded_chat or getattr(forwarded_chat, "type", None) != "channel":
+        return await message.reply_text("Пришли прогноз пересылкой из Telegram-канала, чтобы бот определил его тип.")
+
+    category, sport, mode = classify(text, "")
+    key = f"{sport}_{mode}"
+    if key not in CHANNELS:
+        return await message.reply_text(
+            "Не удалось определить категорию прогноза автоматически. "
+            "Проверь, чтобы в тексте был указан вид спорта (Футбол, Теннис, CS2 или Dota 2) "
+            "и для лайва — слово «Лайв» или маркер 🔴."
+        )
+
+    destination = load(CF, {}).get(key)
+    if not destination:
+        return await message.reply_text(
+            f"Канал назначения «{CHANNELS[key]}» ещё не подключён. "
+            "Сначала выполни /connect и подключи этот канал."
+        )
+
+    coefficient = parse_odds(text)
+    with conn() as db:
+        cursor = db.execute(
+            "INSERT INTO bets(created,channel_key,text,odds,stake,category,sport,mode) VALUES(?,?,?,?,?,?,?,?)",
+            (datetime.now(timezone.utc).isoformat(), key, text, coefficient, STAKE, category, sport, mode),
+        )
+        bet_id = cursor.lastrowid
+
+    try:
+        pretty_text = format_signal(text)
+        sent = await context.bot.send_message(
+            chat_id=destination, text=pretty_text, reply_markup=result_keyboard(bet_id)
+        )
+        with conn() as db:
+            db.execute("UPDATE bets SET channel_message_id=? WHERE id=?", (sent.message_id, bet_id))
+        await message.reply_text(f"Опубликовано автоматически: {CHANNELS[key]} ✅")
+    except Exception as exc:
+        with conn() as db:
+            db.execute("DELETE FROM bets WHERE id=?", (bet_id,))
+        logging.exception("Automatic publish failed")
+        await message.reply_text(
+            "Не удалось отправить прогноз. Проверь, что бот добавлен в канал "
+            "и имеет право публиковать сообщения. Ошибка: " + type(exc).__name__
+        )
 
 
 async def stats_callback(query, data):
