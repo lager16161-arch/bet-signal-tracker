@@ -1,4 +1,4 @@
-
 {
-  "name": "Bet Signal Tracker"
+  "name": "Bet Signal Tracker",
+  "postStartCommand": "cd /workspaces/bet-signal-tracker && pip install -r requirements.txt && (pgrep -af '[p]ython telegram_bot.py' >/dev/null || nohup python telegram_bot.py >> /tmp/telegram_bot.log 2>&1 < /dev/null &)"
 }
