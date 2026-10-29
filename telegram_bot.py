@@ -254,6 +254,8 @@ async def incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # so channel-origin messages (including Premium-formatted posts) aren't intercepted as setup.
     text = extract_message_text(message)
     if not text.strip():
+        # Temporary diagnostics: log the Telegram message payload to identify why Premium forwards have no text.
+        logging.warning("DEBUG MESSAGE: %s", message.to_dict())
         logging.warning(
             "Forwarded/message has no readable text: content_type=%s, forward_origin=%s, caption_entities=%s, entities=%s",
             getattr(message, "effective_attachment", None).__class__.__name__ if getattr(message, "effective_attachment", None) is not None else "text-or-empty",
