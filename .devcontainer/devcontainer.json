@@ -1,5 +1,4 @@
 
 {
-  "name": "Bet Signal Tracker",
-  "postStartCommand": "nohup python /workspaces/bet-signal-tracker/telegram_bot.py >> /tmp/telegram_bot.log 2>&1 < /dev/null &"
+  "name": "Bet Signal Tracker"
 }
