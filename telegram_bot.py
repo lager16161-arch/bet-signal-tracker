@@ -98,11 +98,72 @@ def extract_message_text(message):
         for part in parts:
             if not cleaned or cleaned[-1] != part:
                 cleaned.append(part)
-        result = "\\n".join(cleaned)
+        result = "\n".join(cleaned)
         if result.strip():
             return result
     return ""
 
+
+
+def format_signal(text):
+    """Turn a raw forwarded betting signal into a clean, readable Telegram post."""
+    text = (text or "").replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
+    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    # Remove the original channel's promotional footer.
+    lines = [line for line in lines if not re.search(r"STROGO\s+BOT\s+STAVOK|Перейти\s*$", line, re.I)]
+
+    def value_after(label):
+        for i, line in enumerate(lines):
+            if re.search(label, line, re.I):
+                same = re.sub(label, "", line, count=1, flags=re.I).strip(" :—–-·")
+                if same:
+                    return same
+                if i + 1 < len(lines):
+                    return lines[i + 1]
+        return ""
+
+    amount = value_after(r"(?:💵\s*)?Сумма(?:\s+ставки)?")
+    odds = value_after(r"(?:📊\s*)?(?:Коэффициент|Коэф\.?|КФ|Odds)")
+    payout = value_after(r"(?:💰\s*)?(?:Возможная\s+выплата|Выплата|Potential payout)")
+    match = next((line for line in lines if re.search(r"\s[-–—]\s", line) and not re.search(r"Asian Total|Больше|Меньше|Over|Under", line, re.I)), "")
+    league = value_after(r"🏆\s*(?:Лига)?")
+    kickoff = next((line for line in lines if re.search(r"Начало:", line, re.I)), "")
+    kickoff = re.sub(r"^📅\s*", "", kickoff).replace("Начало:", "Время:").strip()
+    bet = ""
+    for i, line in enumerate(lines):
+        if re.search(r"Asian Total|Тотал|Фора|Победа|Обе команды|Больше|Меньше|Over|Under", line, re.I):
+            if "—" in line or "-" in line:
+                bet = line.replace("📝", "").strip()
+                if i + 1 < len(lines) and lines[i + 1] not in (amount, odds, payout):
+                    # Preserve a selection that follows a market label on the next line.
+                    if re.search(r"Больше|Меньше|Over|Under|Да|Нет", lines[i + 1], re.I):
+                        bet += " " + lines[i + 1]
+                break
+            if i + 1 < len(lines):
+                bet = line.replace("📝", "").strip() + " — " + lines[i + 1]
+                break
+
+    sport = "⚽ ФУТБОЛ"
+    if any("теннис" in line.lower() for line in lines): sport = "🎾 ТЕННИС"
+    elif any("cs2" in line.lower() for line in lines): sport = "🎮 CS2"
+    elif any("dota" in line.lower() for line in lines): sport = "👾 DOTA 2"
+    if league:
+        sport += f"  ·  {league.replace('🏆', '').strip()}"
+
+    out = [sport]
+    if match: out += ["", f"⚔️  {match}"]
+    if kickoff: out.append("🕒  " + kickoff)
+    if bet: out += ["", "🎯  " + bet]
+    metrics = []
+    if amount: metrics.append(f"💵  Сумма: {amount}")
+    if odds: metrics.append(f"📊  Коэффициент: {odds}")
+    if payout: metrics.append(f"💰  Выплата: {payout}")
+    if metrics: out += ["", *metrics]
+    # If the layout was unusual, retain the cleaned source instead of dropping details.
+    if not match and not bet and not metrics:
+        return "\n".join(lines)
+    return "\n".join(out)
 
 def admins():
     return set(load(AF, []))
@@ -125,8 +186,14 @@ def conn():
 
 
 def parse_odds(text):
+    """Extract odds from common signal layouts; infer from payout/stake if needed."""
+    if not text:
+        return None
+
+    # First, look for an explicit odds value near a coefficient label.
     patterns = [
-        r"(?:общий\s+коэффициент|коэффициент|коэф\.?|кф|odds)\s*[:=]?\s*(\d{1,4}(?:[.,]\d{1,3})?)",
+        r"(?:общий\s+коэффициент|коэффициент|коэф\.?|кф|odds)\s*[:=]?\s*(?:left|middle|right|center|\s)*(\d{1,4}(?:[.,]\d{1,3})?)",
+        r"(?:коэффициент|коэф\.?|кф|odds)[^\d\n]{0,80}(\d{1,4}(?:[.,]\d{1,3})?)",
     ]
     for pattern in patterns:
         match = re.search(pattern, text, re.I)
@@ -135,8 +202,33 @@ def parse_odds(text):
                 value = float(match.group(1).replace(",", "."))
                 if 1.0 <= value <= 10000:
                     return value
-            except ValueError:
+            except (ValueError, TypeError):
                 pass
+
+    # Some Premium rich messages flatten the layout so the odds label/value
+    # relationship is lost. In that case, infer odds from potential payout / stake.
+    def amount_after(labels):
+        label_pattern = "|".join(labels)
+        match = re.search(
+            rf"(?:{label_pattern})[^\d\n]{{0,80}}([0-9][0-9\s\u00a0]*(?:[.,][0-9]{{1,2}})?)",
+            text,
+            re.I,
+        )
+        if not match:
+            return None
+        raw = re.sub(r"[\s\u00a0]", "", match.group(1)).replace(",", ".")
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
+    stake = amount_after([r"сумма(?:\s+ставки)?", r"ставка"])
+    payout = amount_after([r"возможная\s+выплата", r"выплата", r"potential\s+payout"])
+    if stake and payout and stake > 0 and payout >= stake:
+        inferred = payout / stake
+        if 1.0 <= inferred <= 10000:
+            return round(inferred, 4)
+
     return None
 
 
@@ -411,7 +503,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 (datetime.now(timezone.utc).isoformat(), key, text, coefficient, STAKE, category, sport, mode))
             bet_id = cursor.lastrowid
         try:
-            sent = await context.bot.send_message(chat_id=destination, text=text, reply_markup=result_keyboard(bet_id))
+            pretty_text = format_signal(text)
+            sent = await context.bot.send_message(chat_id=destination, text=pretty_text, reply_markup=result_keyboard(bet_id))
             with conn() as db:
                 db.execute("UPDATE bets SET channel_message_id=? WHERE id=?", (sent.message_id, bet_id))
             return await query.edit_message_text("Опубликовано текстом в канале: " + CHANNELS[key] + " ✅")
