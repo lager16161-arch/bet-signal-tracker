@@ -1,4 +1,4 @@
 {
   "name": "Bet Signal Tracker",
-  "postStartCommand": "bash /workspaces/bet-signal-tracker/.devcontainer/start-bot.sh"
+  "postStartCommand": "echo 'postStartCommand ran' >> /tmp/codespace-start.log && bash /workspaces/bet-signal-tracker/.devcontainer/start-bot.sh"
 }
