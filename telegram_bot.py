@@ -106,72 +106,18 @@ def extract_message_text(message):
 
 
 def format_signal(text):
-    """Turn a raw forwarded betting signal into a clean, readable Telegram post."""
+    """Preserve the original signal layout while removing the source channel footer."""
     text = (text or "").replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
-    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
-    lines = [line for line in lines if line]
-    # Remove the original channel's promotional footer, including linked footer variants.
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
     cleaned_lines = []
     for line in lines:
+        # Remove the promotional channel line and any linked footer text.
         if re.search(r"STROGO\s+BOT\s+STAVOK", line, re.I):
-            # If footer text is appended to other text on the same line, keep only the part before it.
             line = re.split(r"🤖?\s*STROGO\s+BOT\s+STAVOK", line, maxsplit=1, flags=re.I)[0].strip()
         line = re.sub(r"\s*[·|—-]?\s*Перейти\s*$", "", line, flags=re.I).strip()
         if line:
             cleaned_lines.append(line)
-    lines = cleaned_lines
-
-    def value_after(label):
-        for i, line in enumerate(lines):
-            if re.search(label, line, re.I):
-                same = re.sub(label, "", line, count=1, flags=re.I).strip(" :—–-·")
-                if same:
-                    return same
-                if i + 1 < len(lines):
-                    return lines[i + 1]
-        return ""
-
-    amount = value_after(r"(?:💵\s*)?Сумма(?:\s+ставки)?")
-    odds = value_after(r"(?:📊\s*)?(?:Коэффициент|Коэф\.?|КФ|Odds)")
-    payout = value_after(r"(?:💰\s*)?(?:Возможная\s+выплата|Выплата|Potential payout)")
-    match = next((line for line in lines if re.search(r"\s[-–—]\s", line) and not re.search(r"Asian Total|Больше|Меньше|Over|Under", line, re.I)), "")
-    league = value_after(r"🏆\s*(?:Лига)?")
-    kickoff = next((line for line in lines if re.search(r"Начало:", line, re.I)), "")
-    kickoff = re.sub(r"^📅\s*", "", kickoff).replace("Начало:", "Время:").strip()
-    bet = ""
-    for i, line in enumerate(lines):
-        if re.search(r"Asian Total|Тотал|Фора|Победа|Обе команды|Больше|Меньше|Over|Under", line, re.I):
-            if "—" in line or "-" in line:
-                bet = line.replace("📝", "").strip()
-                if i + 1 < len(lines) and lines[i + 1] not in (amount, odds, payout):
-                    # Preserve a selection that follows a market label on the next line.
-                    if re.search(r"Больше|Меньше|Over|Under|Да|Нет", lines[i + 1], re.I):
-                        bet += " " + lines[i + 1]
-                break
-            if i + 1 < len(lines):
-                bet = line.replace("📝", "").strip() + " — " + lines[i + 1]
-                break
-
-    sport = "⚽ ФУТБОЛ"
-    if any("теннис" in line.lower() for line in lines): sport = "🎾 ТЕННИС"
-    elif any("cs2" in line.lower() for line in lines): sport = "🎮 CS2"
-    elif any("dota" in line.lower() for line in lines): sport = "👾 DOTA 2"
-    if league:
-        sport += f"  ·  {league.replace('🏆', '').strip()}"
-
-    out = [sport]
-    if match: out += ["", f"⚔️  {match}"]
-    if kickoff: out.append("🕒  " + kickoff)
-    if bet: out += ["", "🎯  " + bet]
-    metrics = []
-    if amount: metrics.append(f"💵  Сумма: {amount}")
-    if odds: metrics.append(f"📊  Коэффициент: {odds}")
-    if payout: metrics.append(f"💰  Выплата: {payout}")
-    if metrics: out += ["", *metrics]
-    # If the layout was unusual, retain the cleaned source instead of dropping details.
-    if not match and not bet and not metrics:
-        return "\n".join(lines)
-    return "\n".join(out)
+    return "\n".join(cleaned_lines).strip()
 
 def admins():
     return set(load(AF, []))
